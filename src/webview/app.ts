@@ -184,6 +184,60 @@ function cancelPendingSave(): void {
 	saveInFlight = null;
 }
 
+function cardElement(cardId: string): HTMLElement | null {
+	return root?.querySelector<HTMLElement>(`.kanban-card[data-card-id="${cardId}"]`) || null;
+}
+
+function cardListElement(columnId: string): HTMLElement | null {
+	return root?.querySelector<HTMLElement>(`.card-list[data-drop-column-id="${columnId}"]`) || null;
+}
+
+function updateColumnCount(columnId: string): void {
+	const column = findColumn(columnId);
+	const columnElement = root?.querySelector<HTMLElement>(`.kanban-column[data-column-id="${columnId}"]`);
+	const countElement = columnElement?.querySelector<HTMLElement>('.column-count');
+	if (column && countElement) countElement.textContent = String(column.cards.length);
+}
+
+function emptyColumnButton(columnId: string): HTMLButtonElement {
+	const button = document.createElement('button');
+	button.className = 'empty-column';
+	button.type = 'button';
+	button.dataset.action = 'add-card';
+	button.dataset.columnId = columnId;
+	button.textContent = '+ First task';
+	return button;
+}
+
+function syncEmptyColumnState(columnId: string): void {
+	const column = findColumn(columnId);
+	const listElement = cardListElement(columnId);
+	if (!column || !listElement) return;
+
+	const emptyButton = listElement.querySelector<HTMLElement>('.empty-column');
+	if (column.cards.length === 0) {
+		if (!emptyButton) listElement.appendChild(emptyColumnButton(columnId));
+		return;
+	}
+
+	emptyButton?.remove();
+}
+
+function moveCardElement(cardId: string, toColumnId: string, beforeCardId?: string): boolean {
+	const draggedElement = cardElement(cardId);
+	const toListElement = cardListElement(toColumnId);
+	if (!draggedElement || !toListElement) return false;
+
+	const beforeElement = beforeCardId ? cardElement(beforeCardId) : null;
+	draggedElement.dataset.columnId = toColumnId;
+	draggedElement.querySelectorAll<HTMLElement>('[data-column-id]').forEach(element => {
+		element.dataset.columnId = toColumnId;
+	});
+
+	toListElement.insertBefore(draggedElement, beforeElement);
+	return true;
+}
+
 function moveCard(toColumnId: string, beforeCardId?: string): void {
 	if (!board || !dragState || dragState.type !== 'card') return;
 
@@ -202,7 +256,14 @@ function moveCard(toColumnId: string, beforeCardId?: string): void {
 	toColumn.cards.splice(toIndex, 0, card);
 
 	openMenu = null;
-	render();
+	if (!moveCardElement(draggedCardId, toColumn.id, beforeCardId)) {
+		render();
+	} else {
+		updateColumnCount(fromColumn.id);
+		updateColumnCount(toColumn.id);
+		syncEmptyColumnState(fromColumn.id);
+		syncEmptyColumnState(toColumn.id);
+	}
 	saveSoon(0);
 }
 
@@ -438,6 +499,30 @@ function deleteColumnNow(columnId: string): void {
 	saveSoon(0);
 }
 
+function sortCards(columnId: string, direction: 'asc' | 'desc'): void {
+	const column = findColumn(columnId);
+	if (!column) return;
+
+	const multiplier = direction === 'asc' ? 1 : -1;
+	column.cards = column.cards
+		.map((card, index) => ({ card, index }))
+		.sort((left, right) => {
+			const titleCompare = left.card.title.localeCompare(right.card.title, undefined, {
+				numeric: true,
+				sensitivity: 'base',
+			});
+
+			return titleCompare !== 0
+				? titleCompare * multiplier
+				: left.index - right.index;
+		})
+		.map(item => item.card);
+
+	openMenu = null;
+	render();
+	saveSoon(0);
+}
+
 function addCard(columnId: string): void {
 	const column = findColumn(columnId);
 	if (!column) return;
@@ -508,6 +593,10 @@ function renderColumnMenu(column: Column): string {
 			<div class="menu-label">Column color</div>
 			<div class="swatches">${swatches(column.color || DEFAULT_COLUMN_COLOR, 'column', column.id)}</div>
 			<div class="menu-divider"></div>
+			<button type="button" data-action="add-card" data-column-id="${column.id}">Add task</button>
+			<button type="button" data-action="sort-cards-asc" data-column-id="${column.id}">Sort tasks A-Z</button>
+			<button type="button" data-action="sort-cards-desc" data-column-id="${column.id}">Sort tasks Z-A</button>
+			<div class="menu-divider"></div>
 			<button type="button" data-action="edit-column" data-column-id="${column.id}">Rename</button>
 			<button class="danger-text" type="button" data-action="delete-column" data-column-id="${column.id}">Delete column</button>
 		</div>
@@ -564,7 +653,6 @@ function renderColumn(column: Column): string {
 						${escapeHtml(column.title)}
 					</button>
 					<span class="column-count" title="Task count">${column.cards.length}</span>
-					<button class="column-add" type="button" data-action="add-card" data-column-id="${column.id}" title="Add task">+</button>
 					<button class="column-menu-button" type="button" data-action="toggle-column-menu" data-column-id="${column.id}" title="Column options">⋯</button>
 				</div>
 				${renderColumnMenu(column)}
@@ -707,6 +795,8 @@ async function handleClick(event: MouseEvent): Promise<void> {
 		if (icon) await copyText(icon);
 	}
 	if (action === 'add-card' && target.dataset.columnId) addCard(target.dataset.columnId);
+	if (action === 'sort-cards-asc' && target.dataset.columnId) sortCards(target.dataset.columnId, 'asc');
+	if (action === 'sort-cards-desc' && target.dataset.columnId) sortCards(target.dataset.columnId, 'desc');
 	if (action === 'edit-column' && target.dataset.columnId) editColumn(target.dataset.columnId);
 	if (action === 'delete-column' && target.dataset.columnId) deleteColumn(target.dataset.columnId);
 	if (action === 'toggle-column-menu' && target.dataset.columnId) toggleColumnMenu(target.dataset.columnId);

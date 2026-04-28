@@ -155,7 +155,7 @@ button {
 
 .column-title-row {
 	display: grid;
-	grid-template-columns: 1fr auto 28px 28px;
+	grid-template-columns: minmax(0, 1fr) auto 28px;
 	gap: 4px;
 	align-items: center;
 	min-height: 44px;
@@ -185,7 +185,6 @@ button {
 	text-align: center;
 }
 
-.column-add,
 .column-menu-button,
 .card-menu-button {
 	display: inline-grid;
@@ -198,19 +197,11 @@ button {
 	cursor: pointer;
 }
 
-.column-add {
-	color: #22c55e;
-	font-size: 22px;
-	line-height: 1;
-	font-weight: 700;
-}
-
 .column-menu-button {
 	color: #64748b;
 	font-size: 18px;
 }
 
-.column-add:hover,
 .column-menu-button:hover,
 .card-menu-button:hover {
 	background: rgba(15, 23, 42, 0.08);
@@ -521,7 +512,6 @@ button {
 		color: #f8fafc;
 	}
 
-	.column-add:hover,
 	.column-menu-button:hover,
 	.card-menu-button:hover,
 	.empty-column:hover {

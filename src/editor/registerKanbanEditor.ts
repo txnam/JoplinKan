@@ -101,10 +101,10 @@ function postEmpty(handle: ViewHandle, message: string): void {
 	});
 }
 
-function setContextState(handle: ViewHandle, state: EditorState): void {
+function setContextState(handle: ViewHandle, state: EditorState, notify = true): void {
 	const context = contextFor(handle);
 	context.state = state;
-	if (context.ready) postBoard(handle, state);
+	if (notify && context.ready) postBoard(handle, state);
 }
 
 function clearContextState(handle: ViewHandle, message: string): void {
@@ -148,6 +148,10 @@ async function updateViewFromBody(handle: ViewHandle, noteId: string, body: stri
 	const sequence = ++context.updateSequence;
 
 	try {
+		if (context.state?.noteId === noteId && context.state.body === body) {
+			return true;
+		}
+
 		if (!isKanbanMarkdown(body)) {
 			if (sequence === context.updateSequence) {
 				clearContextState(handle, 'The current note is not a Kanban board.');
@@ -221,7 +225,7 @@ async function handleWebviewMessage(handle: ViewHandle, message: WebviewMessage)
 			body,
 		});
 
-		setContextState(handle, createEditorState(state.noteId, body));
+		setContextState(handle, createEditorState(state.noteId, body), false);
 		return { ok: true };
 	}
 
