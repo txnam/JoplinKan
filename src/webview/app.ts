@@ -10,13 +10,17 @@ import {
 
 type WebviewApi = {
 	postMessage: (message: unknown) => Promise<unknown>;
-	onMessage: (callback: (message: PluginMessage) => void) => void;
+	onMessage: (callback: (event: PluginMessageEvent | PluginMessage) => void) => void;
 };
 
 type PluginMessage =
 	| { type: 'board'; noteId: string; board: Board }
 	| { type: 'error'; message: string }
 	| { type: 'empty'; message: string };
+
+type PluginMessageEvent = {
+	message: PluginMessage;
+};
 
 type OpenMenu =
 	| { type: 'column'; columnId: string }
@@ -57,6 +61,7 @@ let board: Board | null = null;
 let noteId = '';
 let saveTimer: number | undefined;
 let saveInFlight: Promise<boolean> | null = null;
+let saveRequestSequence = 0;
 let dragState: DragState = null;
 let openMenu: OpenMenu = null;
 let dialogState: DialogState = null;
@@ -172,6 +177,13 @@ function closeMenu(): void {
 	render();
 }
 
+function cancelPendingSave(): void {
+	window.clearTimeout(saveTimer);
+	saveTimer = undefined;
+	saveRequestSequence += 1;
+	saveInFlight = null;
+}
+
 function moveCard(toColumnId: string, beforeCardId?: string): void {
 	if (!board || !dragState || dragState.type !== 'card') return;
 
@@ -254,18 +266,25 @@ function findColumnDropPosition(event: DragEvent): { beforeColumnId?: string } |
 async function saveNow(): Promise<boolean> {
 	window.clearTimeout(saveTimer);
 	saveTimer = undefined;
-	if (!board) return true;
+	if (!board || !noteId) return true;
 
 	if (saveInFlight) return saveInFlight;
 
+	const requestSequence = ++saveRequestSequence;
+	const requestNoteId = noteId;
+	const requestBoard = cloneBoard(board);
 	statusText = 'Saving...';
 	renderStatus();
 
 	saveInFlight = webviewApi.postMessage({
 		type: 'saveBoard',
-		board: cloneBoard(board),
+		noteId: requestNoteId,
+		board: requestBoard,
 	}).then(response => {
 		const result = response as { ok?: boolean; message?: string };
+		if (requestSequence !== saveRequestSequence || noteId !== requestNoteId) {
+			return !!result?.ok;
+		}
 
 		if (result?.ok) {
 			statusText = 'Saved';
@@ -277,12 +296,18 @@ async function saveNow(): Promise<boolean> {
 		errorText = result?.message || 'Could not save the Kanban board.';
 		return false;
 	}).catch(error => {
+		if (requestSequence !== saveRequestSequence || noteId !== requestNoteId) {
+			return false;
+		}
+
 		statusText = 'Save failed';
 		errorText = error instanceof Error ? error.message : 'Could not save the Kanban board.';
 		return false;
 	}).finally(() => {
-		saveInFlight = null;
-		renderStatus();
+		if (requestSequence === saveRequestSequence) {
+			saveInFlight = null;
+			renderStatus();
+		}
 	});
 
 	return saveInFlight;
@@ -773,8 +798,16 @@ function setupDragAndDrop(): void {
 	});
 }
 
-function applyPluginMessage(message: PluginMessage): void {
+function unwrapPluginMessage(eventOrMessage: PluginMessageEvent | PluginMessage): PluginMessage {
+	if ('type' in eventOrMessage) return eventOrMessage;
+	return eventOrMessage.message;
+}
+
+function applyPluginMessage(eventOrMessage: PluginMessageEvent | PluginMessage): void {
+	const message = unwrapPluginMessage(eventOrMessage);
+
 	if (message.type === 'board') {
+		cancelPendingSave();
 		board = cloneBoard(message.board);
 		noteId = message.noteId;
 		openMenu = null;
@@ -786,6 +819,7 @@ function applyPluginMessage(message: PluginMessage): void {
 	}
 
 	if (message.type === 'empty') {
+		cancelPendingSave();
 		board = null;
 		noteId = '';
 		openMenu = null;

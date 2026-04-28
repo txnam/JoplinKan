@@ -27,8 +27,9 @@ function headingTitle(title: string): string {
 function serializeCard(card: Card): string[] {
 	const color = normalizeColor(card.color, DEFAULT_CARD_COLOR);
 	const title = headingTitle(card.title);
+	const titleWithColor = color === DEFAULT_CARD_COLOR ? title : `${title} ${colorMarker(color)}`;
 	const lines = [
-		`- ${title} ${colorMarker(color)}`,
+		`- ${titleWithColor}`,
 	];
 
 	const body = normalizeBody(card.body);
