@@ -1,6 +1,6 @@
 {
   "name": "joplin-plugin-joplinkan",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Create and edit Kanban boards directly in Joplin Markdown notes.",
   "license": "MIT",
   "keywords": [

@@ -5,18 +5,25 @@ import { registerKanbanEditor } from './editor/registerKanbanEditor';
 
 joplin.plugins.register({
 	onStart: async () => {
+		const versionInfo = await joplin.versionInfo();
 		const createCommandName = await registerCreateKanbanBoardCommand();
 		await registerKanbanEditor();
 
-		await joplin.views.menus.create('joplinkan-menu', 'JoplinKan', [
-			{ commandName: createCommandName },
-		], MenuItemLocation.Tools);
+		if (versionInfo.platform === 'desktop') {
+			await joplin.views.menus.create('joplinkan-menu', 'JoplinKan', [
+				{ commandName: createCommandName },
+			], MenuItemLocation.Tools);
+		}
 
-		await joplin.views.toolbarButtons.create(
-			'joplinkan-create-board-toolbar-button',
-			createCommandName,
-			ToolbarButtonLocation.NoteToolbar,
-		);
+		try {
+			await joplin.views.toolbarButtons.create(
+				'joplinkan-create-board-toolbar-button',
+				createCommandName,
+				versionInfo.platform === 'desktop' ? ToolbarButtonLocation.NoteToolbar : ToolbarButtonLocation.EditorToolbar,
+			);
+		} catch (error) {
+			console.warn('Could not create the JoplinKan toolbar button:', error);
+		}
 	},
 });
 

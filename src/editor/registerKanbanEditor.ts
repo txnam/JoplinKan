@@ -57,26 +57,12 @@ async function loadNoteBody(noteId: string): Promise<string> {
 	return typeof note.body === 'string' ? note.body : '';
 }
 
-async function loadSelectedNoteId(): Promise<string> {
-	const note = await joplin.workspace.selectedNote();
-	return typeof note?.id === 'string' ? note.id : '';
-}
-
 function createEditorState(noteId: string, body: string): EditorState {
 	return {
 		noteId,
 		board: parseBoard(body),
 		body,
 	};
-}
-
-async function loadEditorState(noteId: string): Promise<EditorState | null> {
-	if (!noteId) return null;
-
-	const body = await loadNoteBody(noteId);
-	if (!isKanbanMarkdown(body)) return null;
-
-	return createEditorState(noteId, body);
 }
 
 function postBoard(handle: ViewHandle, state: EditorState): void {
@@ -111,36 +97,6 @@ function clearContextState(handle: ViewHandle, message: string): void {
 	const context = contextFor(handle);
 	context.state = null;
 	if (context.ready) postEmpty(handle, message);
-}
-
-async function updateViewFromNoteId(handle: ViewHandle, noteId: string): Promise<boolean> {
-	const context = contextFor(handle);
-	const sequence = ++context.updateSequence;
-
-	try {
-		const state = await loadEditorState(noteId);
-		if (sequence !== context.updateSequence) {
-			return !!state;
-		}
-
-		if (!state) {
-			clearContextState(handle, 'The current note is not a Kanban board.');
-			return false;
-		}
-
-		setContextState(handle, state);
-		return true;
-	} catch (error) {
-		if (sequence === context.updateSequence) {
-			context.state = null;
-			if (context.ready) {
-				const message = error instanceof Error ? error.message : 'Could not read the Kanban board.';
-				postError(handle, message);
-			}
-		}
-
-		return false;
-	}
 }
 
 async function updateViewFromBody(handle: ViewHandle, noteId: string, body: string): Promise<boolean> {
@@ -179,17 +135,6 @@ async function updateViewFromBody(handle: ViewHandle, noteId: string, body: stri
 	}
 }
 
-async function ensureViewMatchesSelectedNote(handle: ViewHandle): Promise<EditorState | null> {
-	const selectedNoteId = await loadSelectedNoteId();
-	const context = contextFor(handle);
-
-	if (selectedNoteId && context.state?.noteId !== selectedNoteId) {
-		await updateViewFromNoteId(handle, selectedNoteId);
-	}
-
-	return context.state;
-}
-
 async function handleWebviewMessage(handle: ViewHandle, message: WebviewMessage): Promise<unknown> {
 	if (!message || typeof message !== 'object') return { ok: false };
 
@@ -197,17 +142,12 @@ async function handleWebviewMessage(handle: ViewHandle, message: WebviewMessage)
 		const context = contextFor(handle);
 		context.ready = true;
 
-		const selectedNoteId = await loadSelectedNoteId();
-		if (selectedNoteId) {
-			await updateViewFromNoteId(handle, selectedNoteId);
-		}
-
 		const state = context.state;
 		return state ? { ok: true, type: 'board', noteId: state.noteId, board: state.board } : { ok: true };
 	}
 
 	if (message.type === 'saveBoard') {
-		const state = await ensureViewMatchesSelectedNote(handle);
+		const state = contextFor(handle).state;
 		if (!state) return { ok: true };
 
 		if (message.noteId !== state.noteId) {
@@ -232,33 +172,20 @@ async function handleWebviewMessage(handle: ViewHandle, message: WebviewMessage)
 	return { ok: false };
 }
 
-export async function registerKanbanEditor(): Promise<void> {
+async function setupKanbanEditor(handle: ViewHandle): Promise<void> {
 	const editors = joplin.views.editors;
-	const handle = await editors.create(EDITOR_VIEW_ID);
 	contextFor(handle);
 
 	await editors.setHtml(handle, editorHtml());
 	await editors.addScript(handle, './webview/styles.css');
 
-	await editors.onActivationCheck(handle, async () => {
-		const note = await joplin.workspace.selectedNote();
-		if (!note?.id) {
-			return false;
-		}
-
-		const body = typeof note.body === 'string' ? note.body : await loadNoteBody(note.id);
-		return isKanbanMarkdown(body);
-	});
-
-	await editors.onUpdate(handle, async () => {
-		const note = await joplin.workspace.selectedNote();
-		if (!note?.id) {
+	await editors.onUpdate(handle, async event => {
+		if (!event.noteId) {
 			clearContextState(handle, 'No note is selected.');
 			return;
 		}
 
-		const body = typeof note.body === 'string' ? note.body : await loadNoteBody(note.id);
-		await updateViewFromBody(handle, note.id, body);
+		await updateViewFromBody(handle, event.noteId, event.newBody);
 	});
 
 	await editors.onMessage(handle, async (message: WebviewMessage) => {
@@ -266,9 +193,16 @@ export async function registerKanbanEditor(): Promise<void> {
 	});
 
 	await editors.addScript(handle, './webview/app.js');
+}
 
-	const selectedNoteId = await loadSelectedNoteId();
-	if (selectedNoteId) {
-		await updateViewFromNoteId(handle, selectedNoteId);
-	}
+export async function registerKanbanEditor(): Promise<void> {
+	await joplin.views.editors.register(EDITOR_VIEW_ID, {
+		onActivationCheck: async event => {
+			if (!event.noteId) return false;
+
+			const body = await loadNoteBody(event.noteId);
+			return isKanbanMarkdown(body);
+		},
+		onSetup: setupKanbanEditor,
+	});
 }
