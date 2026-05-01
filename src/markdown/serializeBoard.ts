@@ -19,6 +19,18 @@ function normalizeBody(value: string | undefined): string {
 	return (value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
 }
 
+function normalizeCardBody(value: string | undefined): string {
+	const body = normalizeBody(value);
+	const lines = body.split('\n');
+	const nonBlankLines = lines.filter(line => line.trim() !== '');
+
+	if (nonBlankLines.length > 0 && nonBlankLines.every(line => line.startsWith('  '))) {
+		return lines.map(line => line.startsWith('  ') ? line.slice(2) : line).join('\n');
+	}
+
+	return body;
+}
+
 function headingTitle(title: string): string {
 	const safeTitle = safeHeadingTitle(title);
 	return safeTitle;
@@ -32,7 +44,7 @@ function serializeCard(card: Card): string[] {
 		`- ${titleWithColor}`,
 	];
 
-	const body = normalizeBody(card.body);
+	const body = normalizeCardBody(card.body);
 	if (body) {
 		lines.push(...body.split('\n').map(indentListContinuation));
 	}

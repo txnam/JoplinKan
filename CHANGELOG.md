@@ -4,6 +4,13 @@ All notable changes to JoplinKan will be documented in this file.
 
 ## Unreleased
 
+## 0.5.0
+
+- Fixed Kanban board scroll position resetting when opening column or task menus.
+- Made task text and detail selectable without starting drag-and-drop.
+- Added a task detail editor from the task menu.
+- Improved task detail indentation handling when saving Markdown.
+
 ## 0.4.0
 
 - Switched the Kanban editor registration to `joplin.views.editors.register` so Joplin can create editor views for separate note windows.

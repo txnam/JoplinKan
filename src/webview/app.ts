@@ -46,6 +46,14 @@ type DialogState =
 		onSubmit: (value: string) => void;
 	}
 	| {
+		type: 'multiline';
+		title: string;
+		label: string;
+		value: string;
+		confirmLabel: string;
+		onSubmit: (value: string) => void;
+	}
+	| {
 		type: 'confirm';
 		title: string;
 		message: string;
@@ -69,6 +77,7 @@ let iconsExpanded = false;
 let statusText = '';
 let errorText = '';
 let emptyText = '';
+let suppressTextDrag = false;
 
 const root = document.getElementById('app');
 
@@ -126,6 +135,22 @@ function openTextDialog(
 	}, 0);
 }
 
+function openMultilineDialog(
+	title: string,
+	label: string,
+	value: string,
+	confirmLabel: string,
+	onSubmit: (value: string) => void,
+): void {
+	dialogState = { type: 'multiline', title, label, value, confirmLabel, onSubmit };
+	openMenu = null;
+	render();
+	window.setTimeout(() => {
+		const input = document.querySelector<HTMLTextAreaElement>('[data-role="dialog-input"]');
+		input?.focus();
+	}, 0);
+}
+
 function openConfirmDialog(
 	title: string,
 	message: string,
@@ -145,11 +170,14 @@ function closeDialog(): void {
 }
 
 function submitTextDialog(): void {
-	if (!dialogState || dialogState.type !== 'text') return;
+	if (!dialogState || (dialogState.type !== 'text' && dialogState.type !== 'multiline')) return;
 
-	const input = document.querySelector<HTMLInputElement>('[data-role="dialog-input"]');
-	const value = (input?.value || '').replace(/\s+/g, ' ').trim();
-	if (!value) {
+	const input = document.querySelector<HTMLInputElement | HTMLTextAreaElement>('[data-role="dialog-input"]');
+	const value = dialogState.type === 'text'
+		? (input?.value || '').replace(/\s+/g, ' ').trim()
+		: (input?.value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+
+	if (dialogState.type === 'text' && !value) {
 		input?.focus();
 		return;
 	}
@@ -554,6 +582,16 @@ function editCard(columnId: string, cardId: string): void {
 	});
 }
 
+function editCardDetail(columnId: string, cardId: string): void {
+	const column = findColumn(columnId);
+	const card = column ? findCard(column, cardId) : undefined;
+	if (!card) return;
+
+	openMultilineDialog('Edit task detail', 'Task detail', card.body || '', 'Save', body => {
+		updateCard(columnId, cardId, { body });
+	});
+}
+
 function deleteCard(columnId: string, cardId: string): void {
 	const column = findColumn(columnId);
 	if (!column) return;
@@ -611,6 +649,7 @@ function renderCardMenu(column: Column, card: Card): string {
 			<div class="swatches">${swatches(card.color || DEFAULT_CARD_COLOR, 'card', `${column.id}:${card.id}`)}</div>
 			<div class="menu-divider"></div>
 			<button type="button" data-action="edit-card" data-column-id="${column.id}" data-card-id="${card.id}">Edit task</button>
+			<button type="button" data-action="edit-card-detail" data-column-id="${column.id}" data-card-id="${card.id}">Edit detail</button>
 			<button class="danger-text" type="button" data-action="delete-card" data-column-id="${column.id}" data-card-id="${card.id}">Delete task</button>
 		</div>
 	`;
@@ -628,8 +667,10 @@ function renderCard(column: Column, card: Card): string {
 			style="--card-color: ${card.color || DEFAULT_CARD_COLOR}"
 		>
 			<button class="card-menu-button" type="button" data-action="toggle-card-menu" data-column-id="${column.id}" data-card-id="${card.id}" title="Task options">⋯</button>
-			<div class="card-text" data-action="edit-card" data-column-id="${column.id}" data-card-id="${card.id}">
-				${escapeHtml(card.title)}
+			<div class="card-text">
+				<span class="card-title-text" data-action="edit-card" data-column-id="${column.id}" data-card-id="${card.id}">
+					${escapeHtml(card.title)}
+				</span>
 			</div>
 			${body ? renderCardNote(body) : ''}
 			${renderCardMenu(column, card)}
@@ -677,19 +718,28 @@ function renderEmptyState(message: string): void {
 function renderDialog(): string {
 	if (!dialogState) return '';
 
-	if (dialogState.type === 'text') {
-		return `
-			<div class="dialog-backdrop">
-				<section class="dialog" role="dialog" aria-modal="true">
-					<h2>${escapeHtml(dialogState.title)}</h2>
-					<label class="field-label" for="joplinkan-dialog-input">${escapeHtml(dialogState.label)}</label>
-					<input
+	if (dialogState.type === 'text' || dialogState.type === 'multiline') {
+		const field = dialogState.type === 'text'
+			? `<input
 						id="joplinkan-dialog-input"
 						class="dialog-input"
 						data-role="dialog-input"
 						type="text"
 						value="${escapeHtml(dialogState.value)}"
-					>
+					>`
+			: `<textarea
+						id="joplinkan-dialog-input"
+						class="dialog-input dialog-textarea"
+						data-role="dialog-input"
+						rows="8"
+					>${escapeHtml(dialogState.value)}</textarea>`;
+
+		return `
+			<div class="dialog-backdrop">
+				<section class="dialog" role="dialog" aria-modal="true">
+					<h2>${escapeHtml(dialogState.title)}</h2>
+					<label class="field-label" for="joplinkan-dialog-input">${escapeHtml(dialogState.label)}</label>
+					${field}
 					<div class="dialog-actions">
 						<button type="button" data-action="cancel-dialog">Cancel</button>
 						<button class="primary-action" type="button" data-action="submit-text-dialog">${escapeHtml(dialogState.confirmLabel)}</button>
@@ -717,6 +767,14 @@ function renderDialog(): string {
 
 function render(): void {
 	if (!root) return;
+
+	const previousBoardElement = root.querySelector<HTMLElement>('.board');
+	const previousBoardScrollLeft = previousBoardElement?.scrollLeft || 0;
+	const previousCardListScroll = new Map<string, number>();
+	root.querySelectorAll<HTMLElement>('.card-list').forEach(element => {
+		const columnId = element.dataset.dropColumnId;
+		if (columnId) previousCardListScroll.set(columnId, element.scrollTop);
+	});
 
 	if (!board) {
 		renderEmptyState(emptyText || 'Open a note with a kanban-settings block to use this editor.');
@@ -747,6 +805,14 @@ function render(): void {
 		</div>
 		${renderDialog()}
 	`;
+
+	const boardElement = root.querySelector<HTMLElement>('.board');
+	if (boardElement) boardElement.scrollLeft = previousBoardScrollLeft;
+	root.querySelectorAll<HTMLElement>('.card-list').forEach(element => {
+		const columnId = element.dataset.dropColumnId;
+		const scrollTop = columnId ? previousCardListScroll.get(columnId) : undefined;
+		if (typeof scrollTop === 'number') element.scrollTop = scrollTop;
+	});
 
 	renderStatus();
 }
@@ -804,7 +870,11 @@ async function handleClick(event: MouseEvent): Promise<void> {
 		toggleCardMenu(target.dataset.columnId, target.dataset.cardId);
 	}
 	if (action === 'edit-card' && target.dataset.columnId && target.dataset.cardId) {
+		if (window.getSelection()?.toString()) return;
 		editCard(target.dataset.columnId, target.dataset.cardId);
+	}
+	if (action === 'edit-card-detail' && target.dataset.columnId && target.dataset.cardId) {
+		editCardDetail(target.dataset.columnId, target.dataset.cardId);
 	}
 	if (action === 'delete-card' && target.dataset.columnId && target.dataset.cardId) {
 		deleteCard(target.dataset.columnId, target.dataset.cardId);
@@ -829,9 +899,19 @@ async function handleClick(event: MouseEvent): Promise<void> {
 function setupDragAndDrop(): void {
 	if (!root) return;
 
+	root.addEventListener('mousedown', event => {
+		const target = event.target as HTMLElement;
+		suppressTextDrag = !!target.closest('.card-title-text, .card-note, .menu-popover, button, input, textarea');
+	});
+
 	root.addEventListener('dragstart', event => {
 		const cardElement = (event.target as HTMLElement).closest<HTMLElement>('.kanban-card');
 		if (cardElement) {
+			if (suppressTextDrag) {
+				event.preventDefault();
+				return;
+			}
+
 			dragState = {
 				type: 'card',
 				cardId: cardElement.dataset.cardId || '',
@@ -946,7 +1026,10 @@ async function start(): Promise<void> {
 			closeMenu();
 		}
 
-		if (event.key === 'Enter' && dialogState?.type === 'text') {
+		if (
+			event.key === 'Enter'
+			&& (dialogState?.type === 'text' || (dialogState?.type === 'multiline' && (event.ctrlKey || event.metaKey)))
+		) {
 			submitTextDialog();
 		}
 	});
