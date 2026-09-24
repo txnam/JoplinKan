@@ -89,7 +89,7 @@ function parseColorMarker(raw: string): HeadingMetadata {
 
 function stripTrailingColorMarker(rawTitle: string): { title: string; metadata: HeadingMetadata } {
 	const compactMarkerMatch = /\s*\\?\[\\?\[\s*(#[0-9a-fA-F]{6}|[A-Za-z]+)\s*\\?\]\\?\]\s*$/.exec(rawTitle);
-	if (compactMarkerMatch) {
+	if (compactMarkerMatch && parseColorMarker(compactMarkerMatch[1]).color) {
 		return {
 			title: rawTitle.slice(0, compactMarkerMatch.index).trim(),
 			metadata: parseColorMarker(compactMarkerMatch[1]),
@@ -168,8 +168,16 @@ export function parseListCard(line: string): ParsedListCard | null {
 	return { title, metadata };
 }
 
-export function unindentListContinuation(line: string): string {
-	return line.replace(/^ {2}/, '');
+export function unindentListContinuation(line: string, width = 2): string {
+ let offset = 0;
+ let columns = 0;
+ while (offset < line.length && columns < width) {
+  if (line[offset] === ' ') columns++;
+  else if (line[offset] === '\t') columns += 4 - columns % 4;
+  else break;
+  offset++;
+ }
+ return columns >= width ? ' '.repeat(columns - width) + line.slice(offset) : line;
 }
 
 export function indentListContinuation(line: string): string {

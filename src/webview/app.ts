@@ -1,8 +1,9 @@
+import { detailPresentation, restoreDetailIndent } from './detailPresentation';
 import {
 	Board,
 	Card,
 	Column,
-	COLOR_PALETTE,
+	COLOR_GROUPS,
 	DEFAULT_CARD_COLOR,
 	DEFAULT_COLUMN_COLOR,
 	ICON_GROUPS,
@@ -14,9 +15,10 @@ type WebviewApi = {
 };
 
 type PluginMessage =
-	| { type: 'board'; noteId: string; board: Board }
+ | { type: 'board'; noteId: string; board: Board; sessionId: string; baseBody: string; sequence: number; status: string; message?: string; discardDraft?: boolean }
+ | { type: 'saveStatus'; noteId: string; sessionId: string; sequence: number; status: string; message?: string }
 	| { type: 'error'; message: string }
-	| { type: 'empty'; message: string };
+	| { type: 'empty'; message: string; noteId?: string; discardDraft?: boolean };
 
 type PluginMessageEvent = {
 	message: PluginMessage;
@@ -67,9 +69,11 @@ declare const webviewApi: WebviewApi;
 
 let board: Board | null = null;
 let noteId = '';
-let saveTimer: number | undefined;
-let saveInFlight: Promise<boolean> | null = null;
-let saveRequestSequence = 0;
+let sessionId = '';
+let baseBody = '';
+let saveSequence = 0;
+let saveStatus = '';
+const expandedDetails = new Set<string>();
 let dragState: DragState = null;
 let openMenu: OpenMenu = null;
 let dialogState: DialogState = null;
@@ -175,7 +179,7 @@ function submitTextDialog(): void {
 	const input = document.querySelector<HTMLInputElement | HTMLTextAreaElement>('[data-role="dialog-input"]');
 	const value = dialogState.type === 'text'
 		? (input?.value || '').replace(/\s+/g, ' ').trim()
-		: (input?.value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+		: (input?.value || '').replace(/\r\n?/g, '\n');
 
 	if (dialogState.type === 'text' && !value) {
 		input?.focus();
@@ -203,13 +207,6 @@ function closeMenu(): void {
 	if (!openMenu) return;
 	openMenu = null;
 	render();
-}
-
-function cancelPendingSave(): void {
-	window.clearTimeout(saveTimer);
-	saveTimer = undefined;
-	saveRequestSequence += 1;
-	saveInFlight = null;
 }
 
 function cardElement(cardId: string): HTMLElement | null {
@@ -353,53 +350,37 @@ function findColumnDropPosition(event: DragEvent): { beforeColumnId?: string } |
 }
 
 async function saveNow(): Promise<boolean> {
-	window.clearTimeout(saveTimer);
-	saveTimer = undefined;
-	if (!board || !noteId) return true;
-
-	if (saveInFlight) return saveInFlight;
-
-	const requestSequence = ++saveRequestSequence;
-	const requestNoteId = noteId;
-	const requestBoard = cloneBoard(board);
-	statusText = 'Saving...';
-	renderStatus();
-
-	saveInFlight = webviewApi.postMessage({
-		type: 'saveBoard',
-		noteId: requestNoteId,
-		board: requestBoard,
-	}).then(response => {
-		const result = response as { ok?: boolean; message?: string };
-		if (requestSequence !== saveRequestSequence || noteId !== requestNoteId) {
-			return !!result?.ok;
-		}
-
-		if (result?.ok) {
-			statusText = 'Saved';
-			errorText = '';
-			return true;
-		}
-
-		statusText = 'Save failed';
-		errorText = result?.message || 'Could not save the Kanban board.';
-		return false;
-	}).catch(error => {
-		if (requestSequence !== saveRequestSequence || noteId !== requestNoteId) {
-			return false;
-		}
-
-		statusText = 'Save failed';
-		errorText = error instanceof Error ? error.message : 'Could not save the Kanban board.';
-		return false;
-	}).finally(() => {
-		if (requestSequence === saveRequestSequence) {
-			saveInFlight = null;
-			renderStatus();
-		}
-	});
-
-	return saveInFlight;
+ if (!board || !noteId || !sessionId) return false;
+ const requestSession = sessionId;
+ const sequence = ++saveSequence;
+ saveStatus = 'accepted'; statusText = 'Saving...'; renderStatus();
+ try {
+  const response = await webviewApi.postMessage({ type: 'saveBoard', noteId, sessionId,
+   sequence, baseBody, board: cloneBoard(board) }) as { ok?: boolean; message?: string };
+  if (!response?.ok && sessionId === requestSession && saveSequence === sequence) {
+   saveStatus = 'error'; statusText = 'Save failed'; errorText = response?.message || 'Could not queue this change.'; renderStatus();
+  }
+  return !!response?.ok;
+ } catch (error) {
+  if (sessionId === requestSession && saveSequence === sequence) {
+   saveStatus = 'error'; statusText = 'Save failed'; errorText = error instanceof Error ? error.message : 'Could not queue this change.'; renderStatus();
+  }
+  return false;
+ }
+}
+async function recoveryAction(type: 'retrySave' | 'saveCopy' | 'reloadBoard'): Promise<void> {
+ const requestSession = sessionId;
+ try {
+  // Re-send the visible snapshot on retry, including transport failures before receipt.
+  if (type === 'retrySave' && !await saveNow()) return;
+  const result = await webviewApi.postMessage({ type, noteId, sessionId }) as { ok?: boolean; message?: string };
+  if (sessionId !== requestSession) return;
+  if (!result.ok) throw new Error(result.message || 'Could not complete the action.');
+  if (type === 'saveCopy') { statusText = 'Copy saved in the same notebook'; renderStatus(); }
+ } catch (error) {
+  if (sessionId !== requestSession) return;
+  errorText = error instanceof Error ? error.message : 'Could not complete the action.'; renderStatus();
+ }
 }
 
 async function copyText(value: string): Promise<void> {
@@ -428,16 +409,7 @@ async function copyText(value: string): Promise<void> {
 	renderStatus();
 }
 
-function saveSoon(delay = 450): void {
-	if (!board) return;
-	window.clearTimeout(saveTimer);
-	statusText = 'Waiting to save...';
-	renderStatus();
-
-	saveTimer = window.setTimeout(() => {
-		saveNow();
-	}, delay);
-}
+function saveSoon(_delay = 0): void { void saveNow(); }
 
 function renderStatus(): void {
 	const status = document.querySelector('[data-role="status"]');
@@ -445,7 +417,7 @@ function renderStatus(): void {
 
 	const error = document.querySelector('[data-role="error"]');
 	if (error) {
-		error.textContent = errorText;
+        error.innerHTML = `<span>${escapeHtml(errorText)}</span><div class="recovery-actions">${saveStatus === 'conflict' ? '<button data-action="save-copy">Save a copy</button><button data-action="reload-board">Reload note</button>' : saveStatus === 'error' ? '<button data-action="retry-save">Retry save</button>' : ''}</div>`;
 		error.classList.toggle('is-hidden', !errorText);
 	}
 }
@@ -480,7 +452,7 @@ function addColumn(): void {
 			id: uid('column'),
 			title,
 			body: '',
-			color: DEFAULT_COLUMN_COLOR,
+			color: board.settings.defaultColumnColor,
 			icon: '',
 			cards: [],
 		});
@@ -563,7 +535,7 @@ function addCard(columnId: string): void {
 			id: uid('card'),
 			title,
 			body: '',
-			color: DEFAULT_CARD_COLOR,
+			color: board?.settings.defaultCardColor || DEFAULT_CARD_COLOR,
 			icon: '',
 		});
 		openMenu = null;
@@ -587,7 +559,10 @@ function editCardDetail(columnId: string, cardId: string): void {
 	const card = column ? findCard(column, cardId) : undefined;
 	if (!card) return;
 
-	openMultilineDialog('Edit task detail', 'Task detail', card.body || '', 'Save', body => {
+	const original = card.body || '';
+ const presentation = detailPresentation(original);
+ openMultilineDialog('Edit task detail', 'Task detail', presentation.text, 'Save', text => {
+  const body = text === presentation.text ? original : restoreDetailIndent(text, presentation.prefix);
 		updateCard(columnId, cardId, { body });
 	});
 }
@@ -602,26 +577,41 @@ function deleteCard(columnId: string, cardId: string): void {
 }
 
 function swatches(selectedColor: string, target: string, id: string): string {
-	return COLOR_PALETTE.map(color => `
-		<button
-			class="swatch ${selectedColor === color.value ? 'is-selected' : ''}"
-			type="button"
-			data-action="set-color"
-			data-target="${target}"
-			data-id="${id}"
-			data-color="${color.value}"
-			title="${escapeHtml(color.label)}"
-			style="background-color: ${color.value};"
-		></button>
-	`).join('');
+ return COLOR_GROUPS.map(group => `<div class="color-group"><div class="menu-label">${escapeHtml(group.label)}</div><div class="swatches">${group.items.map(color => `
+  <button type="button" class="swatch ${selectedColor.toLowerCase() === color.value ? 'is-selected' : ''}"
+   data-action="set-color" data-target="${target}" data-id="${id}" data-color="${color.value}"
+   style="background:${color.value}" title="${escapeHtml(color.label)} &middot; ${color.value.toUpperCase()}"
+   aria-label="${escapeHtml(color.label)} ${color.value}" aria-pressed="${selectedColor.toLowerCase() === color.value}"></button>
+ `).join('')}</div></div>`).join('');
 }
-
-function renderCardNote(body: string): string {
-	const lines = body.split('\n').map(line => {
-		return `<div class="card-note-line">${line ? escapeHtml(line) : '&nbsp;'}</div>`;
-	});
-
-	return `<div class="card-note">${lines.join('')}</div>`;
+function renderCardNote(card: Card): string {
+ const expanded = expandedDetails.has(card.id);
+ return `<div class="card-note ${expanded ? 'is-expanded' : ''}">
+  <div class="card-note-content">${escapeHtml(detailPresentation(card.body).text)}</div>
+  <button type="button" class="detail-toggle" data-action="toggle-detail" data-card-id="${card.id}"
+   aria-expanded="${expanded}" aria-label="${expanded ? 'Collapse detail' : 'Expand detail'}" title="${expanded ? 'Collapse detail' : 'Expand detail'}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg></button>
+ </div>`;
+}
+function measureDetails(): void {
+ root?.querySelectorAll<HTMLElement>('.card-note').forEach(note => {
+  const content = note.querySelector<HTMLElement>('.card-note-content');
+  if (!content) return;
+  const lineHeight = parseFloat(getComputedStyle(content).lineHeight);
+  const long = content.scrollHeight > lineHeight * 4 + 1;
+  note.classList.toggle('has-overflow', long);
+ });
+}
+function positionMenus(): void {
+ root?.querySelectorAll<HTMLElement>('.menu-popover:not(.is-hidden)').forEach(menu => {
+  const card = menu.closest<HTMLElement>('.kanban-card');
+  const anchor = card?.querySelector<HTMLElement>('.card-menu-button') || menu.parentElement?.querySelector<HTMLElement>('.column-menu-button');
+  if (!anchor) return;
+  const rect = anchor.getBoundingClientRect();
+  menu.style.position = 'fixed'; menu.style.right = 'auto';
+  menu.style.left = `${Math.max(8, Math.min(rect.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))}px`;
+  const top = rect.bottom + 4;
+  menu.style.top = `${Math.max(8, Math.min(top, window.innerHeight - menu.offsetHeight - 8))}px`;
+ });
 }
 
 function renderColumnMenu(column: Column): string {
@@ -629,7 +619,7 @@ function renderColumnMenu(column: Column): string {
 	return `
 		<div class="menu-popover ${isMenuOpen(key) ? '' : 'is-hidden'}" data-menu="${key}">
 			<div class="menu-label">Column color</div>
-			<div class="swatches">${swatches(column.color || DEFAULT_COLUMN_COLOR, 'column', column.id)}</div>
+			<div class="color-groups">${swatches(column.color || DEFAULT_COLUMN_COLOR, 'column', column.id)}</div>
 			<div class="menu-divider"></div>
 			<button type="button" data-action="add-card" data-column-id="${column.id}">Add task</button>
 			<button type="button" data-action="sort-cards-asc" data-column-id="${column.id}">Sort tasks A-Z</button>
@@ -646,7 +636,7 @@ function renderCardMenu(column: Column, card: Card): string {
 	return `
 		<div class="menu-popover card-menu ${isMenuOpen(key) ? '' : 'is-hidden'}" data-menu="${key}">
 			<div class="menu-label">Task color</div>
-			<div class="swatches">${swatches(card.color || DEFAULT_CARD_COLOR, 'card', `${column.id}:${card.id}`)}</div>
+			<div class="color-groups">${swatches(card.color || DEFAULT_CARD_COLOR, 'card', `${column.id}:${card.id}`)}</div>
 			<div class="menu-divider"></div>
 			<button type="button" data-action="edit-card" data-column-id="${column.id}" data-card-id="${card.id}">Edit task</button>
 			<button type="button" data-action="edit-card-detail" data-column-id="${column.id}" data-card-id="${card.id}">Edit detail</button>
@@ -656,7 +646,7 @@ function renderCardMenu(column: Column, card: Card): string {
 }
 
 function renderCard(column: Column, card: Card): string {
-	const body = card.body.trim();
+	const hasBody = !!card.body.trim();
 
 	return `
 		<article
@@ -672,7 +662,7 @@ function renderCard(column: Column, card: Card): string {
 					${escapeHtml(card.title)}
 				</span>
 			</div>
-			${body ? renderCardNote(body) : ''}
+			${hasBody ? renderCardNote(card) : ''}
 			${renderCardMenu(column, card)}
 		</article>
 	`;
@@ -815,6 +805,8 @@ function render(): void {
 	});
 
 	renderStatus();
+    measureDetails();
+    positionMenus();
 }
 
 function toggleColumnMenu(columnId: string): void {
@@ -837,6 +829,23 @@ async function handleClick(event: MouseEvent): Promise<void> {
 	}
 
 	const action = target.dataset.action;
+ if (action === 'toggle-detail' && target.dataset.cardId) {
+  const id = target.dataset.cardId;
+  if (expandedDetails.has(id)) expandedDetails.delete(id); else expandedDetails.add(id);
+  const note = target.closest('.card-note');
+  const expanded = expandedDetails.has(id);
+  note?.classList.toggle('is-expanded', expanded);
+  target.setAttribute('aria-expanded', String(expanded));
+  target.setAttribute('aria-label', expanded ? 'Collapse detail' : 'Expand detail');
+  target.title = expanded ? 'Collapse detail' : 'Expand detail';
+  measureDetails(); return;
+ }
+ if (action === 'retry-save') { await recoveryAction('retrySave'); return; }
+ if (action === 'save-copy') { await recoveryAction('saveCopy'); return; }
+ if (action === 'reload-board') {
+  openConfirmDialog('Reload note', 'Discard your unsaved changes and load the current note?', 'Reload', true, () => { void recoveryAction('reloadBoard'); }); return;
+ }
+
 
 	if (action === 'cancel-dialog') {
 		closeDialog();
@@ -976,20 +985,31 @@ function unwrapPluginMessage(eventOrMessage: PluginMessageEvent | PluginMessage)
 function applyPluginMessage(eventOrMessage: PluginMessageEvent | PluginMessage): void {
 	const message = unwrapPluginMessage(eventOrMessage);
 
-	if (message.type === 'board') {
-		cancelPendingSave();
+ if (message.type === 'saveStatus') {
+  if (message.sessionId !== sessionId || message.noteId !== noteId || message.sequence !== saveSequence) return;
+  saveStatus = message.status;
+  statusText = message.status === 'saved' ? 'Saved' : message.status === 'accepted' ? 'Saving...' : message.status === 'conflict' ? 'Conflict' : 'Save failed';
+  errorText = message.message || ''; renderStatus(); return;
+ }
+ if (message.type === 'board') {
+  if (!message.discardDraft && message.noteId === noteId && message.sessionId !== sessionId && ['accepted', 'error', 'conflict'].includes(saveStatus)) return;
+  if (sessionId !== message.sessionId || noteId !== message.noteId) expandedDetails.clear();
+  sessionId = message.sessionId; baseBody = message.baseBody; saveSequence = message.sequence; saveStatus = message.status;
 		board = cloneBoard(message.board);
 		noteId = message.noteId;
 		openMenu = null;
 		dialogState = null;
 		emptyText = '';
-		errorText = '';
-		statusText = '';
+		errorText = message.message || '';
+		statusText = message.status === 'accepted' ? 'Saving...' : message.status === 'conflict' ? 'Conflict' : message.status === 'error' ? 'Save failed' : '';
 		render();
 	}
 
 	if (message.type === 'empty') {
-		cancelPendingSave();
+  if (!message.discardDraft && message.noteId === noteId && ['accepted', 'error', 'conflict'].includes(saveStatus)) {
+   saveStatus = 'conflict'; statusText = 'Conflict'; errorText = message.message; renderStatus(); return;
+  }
+        sessionId = ''; baseBody = ''; saveSequence = 0; saveStatus = ''; expandedDetails.clear();
 		board = null;
 		noteId = '';
 		openMenu = null;
@@ -1034,6 +1054,9 @@ async function start(): Promise<void> {
 		}
 	});
 	setupDragAndDrop();
+ new ResizeObserver(() => { measureDetails(); positionMenus(); }).observe(root);
+ window.addEventListener('resize', () => { measureDetails(); positionMenus(); });
+ root.addEventListener('scroll', () => positionMenus(), true);
 
 	const initial = await webviewApi.postMessage({ type: 'ready' }) as PluginMessage | { ok?: boolean };
 	if ('type' in initial) {

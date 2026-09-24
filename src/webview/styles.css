@@ -240,9 +240,51 @@ button {
 
 .swatches {
 	display: grid;
-	grid-template-columns: repeat(7, 20px);
+	grid-template-columns: repeat(8, 20px);
 	gap: 6px;
 	align-items: center;
+}
+
+.color-groups { display: grid; gap: 12px; }
+.color-group .menu-label { margin-bottom: 7px; }
+.menu-popover {
+ max-height: calc(100vh - 16px);
+ max-width: calc(100vw - 16px);
+ overflow-y: auto;
+ overscroll-behavior: contain;
+ z-index: 80;
+}
+.swatch:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+.swatch.is-selected::after {
+ content: '✓'; color: white; text-shadow: 0 0 2px black, 0 0 3px black;
+ display: block; text-align: center; font-size: 14px; line-height: 18px;
+}
+.card-note { position: relative; }
+.card-note-content { white-space: pre-wrap; line-height: 1.35; overflow-wrap: anywhere; }
+.detail-toggle { display: none; }
+@media (min-width: 768px) {
+ .card-note:not(.is-expanded) .card-note-content { max-height: 5.4em; overflow: hidden; }
+ .card-note.has-overflow { padding-right: 24px; }
+ .card-note.has-overflow .detail-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  position: absolute; right: -3px; bottom: 0; width: 22px; height: 22px;
+  padding: 3px; border: 0; border-radius: 4px; background: transparent;
+  color: inherit; opacity: .55; cursor: pointer;
+ }
+ .detail-toggle svg { width: 16px; height: 16px; pointer-events: none; }
+ .detail-toggle path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+ .detail-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+ .detail-toggle:hover, .detail-toggle:focus-visible { opacity: 1; background: rgba(127,127,127,.15); }
+}
+@media (min-width: 768px) and (pointer: coarse) {
+ .card-note.has-overflow { padding-right: 32px; }
+ .card-note.has-overflow .detail-toggle { width: 32px; height: 32px; }
+}
+.recovery-actions { display: flex; gap: 8px; margin-top: 6px; }
+.recovery-actions button { padding: 5px 9px; cursor: pointer; }
+@media (hover: none) {
+ .detail-toggle { opacity: .85; }
+ .card-menu-button { opacity: 1; }
 }
 
 .swatch {

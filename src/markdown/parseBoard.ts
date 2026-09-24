@@ -10,6 +10,7 @@ import {
 } from './types';
 import { isValidId, parseHeading, parseListCard, normalizeColor, normalizeIcon, unindentListContinuation } from './metadata';
 import { uniqueId } from './id';
+import { decodeDetailLineBreaks } from './detailLineBreaks';
 
 type SettingsBlock = {
 	start: number;
@@ -31,8 +32,12 @@ function trimBlankLines(lines: string[]): string {
 	return lines.slice(start, end).join('\n');
 }
 
-function isFenceLine(line: string): boolean {
-	return /^(```|~~~)/.test(line.trim());
+type Fence = { character: string; length: number } | null;
+function advanceFence(line: string, fence: Fence): Fence {
+ const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+ if (!match) return fence;
+ if (fence) return match[1][0] === fence.character && match[1].length >= fence.length && !match[2].trim() ? null : fence;
+ return { character: match[1][0], length: match[1].length };
 }
 
 function parseSettings(lines: string[]): Record<string, string> {
@@ -49,7 +54,10 @@ function parseSettings(lines: string[]): Record<string, string> {
 }
 
 function findSettingsBlock(lines: string[]): SettingsBlock | null {
+	let fence: Fence = null;
 	for (let index = 0; index < lines.length; index += 1) {
+        if (fence) { fence = advanceFence(lines[index], fence); continue; }
+        if (!lines[index].startsWith("```kanban-settings")) { fence = advanceFence(lines[index], fence); continue; }
 		if (lines[index].trim() !== `\`\`\`${KANBAN_SETTINGS_FENCE}`) continue;
 
 		for (let end = index + 1; end < lines.length; end += 1) {
@@ -70,7 +78,7 @@ function findSettingsBlock(lines: string[]): SettingsBlock | null {
 
 function pushCard(currentCard: Card | null, currentCardBody: string[]): Card | null {
 	if (!currentCard) return null;
-	currentCard.body = trimBlankLines(currentCardBody);
+	currentCard.body = decodeDetailLineBreaks(trimBlankLines(currentCardBody));
 	return currentCard;
 }
 
@@ -84,7 +92,7 @@ function resolveId(candidate: string | undefined, title: string, usedIds: Set<st
 }
 
 export function isKanbanMarkdown(markdown: string): boolean {
-	return splitLines(markdown).some(line => line.trim() === `\`\`\`${KANBAN_SETTINGS_FENCE}`);
+	try { return !!findSettingsBlock(splitLines(markdown)); } catch { return true; }
 }
 
 export function parseBoard(markdown: string): Board {
@@ -99,7 +107,10 @@ export function parseBoard(markdown: string): Board {
 		throw new Error(`Unsupported Kanban plugin: ${settingsBlock.settings.plugin}.`);
 	}
 
-	const contentLines = lines.slice(0, settingsBlock.start);
+	if (settingsBlock.settings.version && settingsBlock.settings.version !== '1') throw new Error('Unsupported Kanban version.');
+ const defaultColumnColor = normalizeColor(settingsBlock.settings.defaultColumnColor, DEFAULT_COLUMN_COLOR);
+ const defaultCardColor = normalizeColor(settingsBlock.settings.defaultCardColor, DEFAULT_CARD_COLOR);
+ const contentLines = lines.slice(0, settingsBlock.start);
 	const epilogue = trimBlankLines(lines.slice(settingsBlock.end + 1));
 	const usedColumnIds = new Set<string>();
 	const usedCardIds = new Set<string>();
@@ -111,7 +122,8 @@ export function parseBoard(markdown: string): Board {
 	let currentCard: Card | null = null;
 	let currentCardBody: string[] = [];
 	let currentCardSource: 'heading' | 'list' | null = null;
-	let inFence = false;
+	let fence: Fence = null;
+ let continuationIndent = 2;
 
 	const finishCard = () => {
 		const completedCard = pushCard(currentCard, currentCardBody);
@@ -134,8 +146,8 @@ export function parseBoard(markdown: string): Board {
 	};
 
 	for (const line of contentLines) {
-		const heading = !inFence ? parseHeading(line) : null;
-		const listCard = !inFence && !heading && currentCardSource !== 'heading' ? parseListCard(line) : null;
+		const heading = !fence ? parseHeading(line) : null;
+		const listCard = !fence && !heading && currentCardSource !== 'heading' ? parseListCard(line) : null;
 
 		if (heading?.level === 1) {
 			finishColumn();
@@ -144,7 +156,7 @@ export function parseBoard(markdown: string): Board {
 				id,
 				title: heading.title,
 				body: '',
-				color: normalizeColor(heading.metadata.color, DEFAULT_COLUMN_COLOR),
+				color: normalizeColor(heading.metadata.color, defaultColumnColor),
 				icon: normalizeIcon(heading.metadata.icon),
 				cards: [],
 			};
@@ -155,7 +167,7 @@ export function parseBoard(markdown: string): Board {
 					id,
 					title: 'Backlog',
 					body: '',
-					color: DEFAULT_COLUMN_COLOR,
+					color: defaultColumnColor,
 					icon: '📥',
 					cards: [],
 				};
@@ -167,7 +179,7 @@ export function parseBoard(markdown: string): Board {
 				id,
 				title: heading.title,
 				body: '',
-				color: normalizeColor(heading.metadata.color, DEFAULT_CARD_COLOR),
+				color: normalizeColor(heading.metadata.color, defaultCardColor),
 				icon: normalizeIcon(heading.metadata.icon),
 			};
 			currentCardSource = 'heading';
@@ -178,7 +190,7 @@ export function parseBoard(markdown: string): Board {
 					id,
 					title: 'Backlog',
 					body: '',
-					color: DEFAULT_COLUMN_COLOR,
+					color: defaultColumnColor,
 					icon: '',
 					cards: [],
 				};
@@ -190,19 +202,21 @@ export function parseBoard(markdown: string): Board {
 				id,
 				title: listCard.title,
 				body: '',
-				color: normalizeColor(listCard.metadata.color, DEFAULT_CARD_COLOR),
+				color: normalizeColor(listCard.metadata.color, defaultCardColor),
 				icon: normalizeIcon(listCard.metadata.icon),
 			};
 			currentCardSource = 'list';
+            continuationIndent = /^[-*+]([ \t]+)/.exec(line)![0].replace(/\t/g, '   ').length;
 		} else if (currentCard) {
-			currentCardBody.push(unindentListContinuation(line));
+			currentCardBody.push(currentCardSource === 'list' ? unindentListContinuation(line, continuationIndent) : line);
 		} else if (currentColumn) {
 			currentColumnBody.push(line);
 		} else {
 			preambleLines.push(line);
 		}
 
-		if (isFenceLine(line)) inFence = !inFence;
+		const fenceLine = currentCardSource === 'list' ? unindentListContinuation(line, continuationIndent) : line;
+        fence = advanceFence(fenceLine, fence);
 	}
 
 	finishColumn();
@@ -215,7 +229,8 @@ export function parseBoard(markdown: string): Board {
 			defaultCardColor: normalizeColor(settingsBlock.settings.defaultCardColor, DEFAULT_CARD_COLOR),
 		},
 		columns,
-		preamble: trimBlankLines(preambleLines),
+		extraSettingsLines: lines.slice(settingsBlock.start + 1, settingsBlock.end).filter(line => !/^\s*(version|plugin|defaultColumnColor|defaultCardColor)\s*:/.test(line)),
+        preamble: trimBlankLines(preambleLines),
 		epilogue,
 	};
 }

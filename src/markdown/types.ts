@@ -32,6 +32,7 @@ export type Board = {
 	version: 1;
 	columns: Column[];
 	settings: BoardSettings;
+	extraSettingsLines?: string[];
 	preamble?: string;
 	epilogue?: string;
 };
@@ -44,36 +45,7 @@ export type IconGroup = {
 	}>;
 };
 
-export const COLOR_PALETTE = [
-	{ label: 'Ink', value: '#222831' },
-	{ label: 'Graphite', value: '#393e46' },
-	{ label: 'Slate', value: '#64748b' },
-	{ label: 'Cloud', value: '#eeeeee' },
-	{ label: 'White', value: '#ffffff' },
-	{ label: 'Ocean', value: '#00adb5' },
-	{ label: 'Aqua', value: '#00fff5' },
-	{ label: 'Sky', value: '#3abef9' },
-	{ label: 'Blue', value: '#2563eb' },
-	{ label: 'Navy', value: '#112d4e' },
-	{ label: 'Mint', value: '#95e1d3' },
-	{ label: 'Leaf', value: '#16a34a' },
-	{ label: 'Lime', value: '#a3e635' },
-	{ label: 'Sage', value: '#a8df8e' },
-	{ label: 'Yellow', value: '#facc15' },
-	{ label: 'Gold', value: '#f9b572' },
-	{ label: 'Amber', value: '#f59e0b' },
-	{ label: 'Orange', value: '#f97316' },
-	{ label: 'Coral', value: '#ff6b6b' },
-	{ label: 'Red', value: '#dc2626' },
-	{ label: 'Rose', value: '#ff4d6d' },
-	{ label: 'Pink', value: '#f875aa' },
-	{ label: 'Fuchsia', value: '#c23373' },
-	{ label: 'Purple', value: '#7c3aed' },
-	{ label: 'Lavender', value: '#a78bfa' },
-	{ label: 'Peach', value: '#ffd6a5' },
-	{ label: 'Cream', value: '#fff3da' },
-	{ label: 'Sand', value: '#e9c46a' },
-];
+export { COLOR_GROUPS, COLOR_PALETTE } from './palette';
 
 export const ICON_GROUPS: IconGroup[] = [
 	{

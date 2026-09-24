@@ -14,21 +14,10 @@ import {
 	normalizeColor,
 	safeHeadingTitle,
 } from './metadata';
+import { detailSeparator, encodeDetailLineBreaks } from './detailLineBreaks';
 
 function normalizeBody(value: string | undefined): string {
-	return (value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
-}
-
-function normalizeCardBody(value: string | undefined): string {
-	const body = normalizeBody(value);
-	const lines = body.split('\n');
-	const nonBlankLines = lines.filter(line => line.trim() !== '');
-
-	if (nonBlankLines.length > 0 && nonBlankLines.every(line => line.startsWith('  '))) {
-		return lines.map(line => line.startsWith('  ') ? line.slice(2) : line).join('\n');
-	}
-
-	return body;
+ return (value || '').replace(/\r\n?/g, '\n').replace(/^(?:[ \t]*\n)+|(?:\n[ \t]*)+$/g, '');
 }
 
 function headingTitle(title: string): string {
@@ -36,23 +25,26 @@ function headingTitle(title: string): string {
 	return safeTitle;
 }
 
-function serializeCard(card: Card): string[] {
+function serializeCard(card: Card, defaultColor: string): string[] {
 	const color = normalizeColor(card.color, DEFAULT_CARD_COLOR);
 	const title = headingTitle(card.title);
-	const titleWithColor = color === DEFAULT_CARD_COLOR ? title : `${title} ${colorMarker(color)}`;
+	const titleWithColor = color === defaultColor ? title : `${title} ${colorMarker(color)}`;
 	const lines = [
 		`- ${titleWithColor}`,
 	];
 
-	const body = normalizeCardBody(card.body);
+	const body = normalizeBody(card.body);
 	if (body) {
-		lines.push(...body.split('\n').map(indentListContinuation));
+		const separator = detailSeparator(body);
+		if (separator === 'hardbreak') lines[0] += '  ';
+		if (separator === 'blank') lines.push('');
+		lines.push(...encodeDetailLineBreaks(body).split('\n').map(indentListContinuation));
 	}
 
 	return lines;
 }
 
-function serializeColumn(column: Column): string[] {
+function serializeColumn(column: Column, defaultCardColor: string): string[] {
 	const color = normalizeColor(column.color, DEFAULT_COLUMN_COLOR);
 	const title = headingTitle(column.title);
 	const lines = [
@@ -67,7 +59,7 @@ function serializeColumn(column: Column): string[] {
 	let wroteCard = false;
 	for (const card of column.cards || []) {
 		if (body && !wroteCard && lines[lines.length - 1] !== '') lines.push('');
-		lines.push(...serializeCard(card));
+		lines.push(...serializeCard(card, defaultCardColor));
 		wroteCard = true;
 	}
 
@@ -75,6 +67,7 @@ function serializeColumn(column: Column): string[] {
 }
 
 export function serializeBoard(board: Board): string {
+	if (board.version !== 1 || (board.settings?.version && board.settings.version !== 1)) throw new Error('Unsupported Kanban version.');
 	const settings = {
 		...DEFAULT_SETTINGS,
 		...board.settings,
@@ -92,7 +85,7 @@ export function serializeBoard(board: Board): string {
 
 	for (const column of board.columns || []) {
 		if (sections.length) sections.push('');
-		sections.push(...serializeColumn(column));
+		sections.push(...serializeColumn(column, settings.defaultCardColor));
 	}
 
 	if (sections.length) sections.push('');
@@ -102,6 +95,7 @@ export function serializeBoard(board: Board): string {
 		`plugin: ${settings.plugin}`,
 		`defaultColumnColor: "${settings.defaultColumnColor}"`,
 		`defaultCardColor: "${settings.defaultCardColor}"`,
+        ...(board.extraSettingsLines || []),
 		'```',
 	);
 
